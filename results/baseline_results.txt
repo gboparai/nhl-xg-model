@@ -1,0 +1,24 @@
+BASELINE
+Generated  : 2026-03-19 21:01:29
+Seasons    : 20232024, 20242025
+
+Situation           n   Goal%      AUC   LogLoss    Brier
+----------------------------------------------------------
+  5v5           217,858   0.055   0.8140    0.1787   0.0484
+  PP             25,088   0.108   0.7656    0.2980   0.0876
+  PK             22,715   0.095   0.7412    0.2830   0.0814
+----------------------------------------------------------
+  Overall*      265,661   0.063   0.8059    0.1988   0.0550
+  EN (info)       4,250   0.176      n/a       n/a      n/a
+
+  * 5v5 + PP + PK combined  |  EN excluded from AUC (trivially easy)
+
+REFERENCE BENCHMARKS (statsyuk README, holdout 2022-25)
+----------------------------------------------------------
+  All-situations AUC  : 0.799
+  Log-loss            : 0.416
+  Brier score         : 0.140
+
+NOTE: Shot population is Fenwick (SOG + missed shots + goals).
+      Empty net shots are present in predictions but excluded
+      from AUC metrics (goal rate ~17% makes them trivially easy).
