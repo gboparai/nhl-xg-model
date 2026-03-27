@@ -544,7 +544,11 @@ class XGModel:
 
     # ── 3b. Shift features ────────────────────────────────────────────
 
-    def _add_shift_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _add_shift_features(
+        self,
+        df: pd.DataFrame,
+        live_shifts: "pd.DataFrame | None" = None,
+    ) -> pd.DataFrame:
         """
         Join shift data to compute (fully vectorised):
           shooter_toi   : seconds the shooter has been on ice when they shoot
@@ -554,16 +558,26 @@ class XGModel:
 
         Strategy: merge shots → shifts on game_id+period, filter to shifts that
         overlap the shot time, then aggregate per shot.
+
+        Parameters
+        ----------
+        live_shifts : pd.DataFrame | None
+            Pre-fetched shift DataFrame (same schema as shift_lookup.parquet).
+            When provided, the parquet file is not read.  Pass ``None`` to
+            fall back to the on-disk parquet.
         """
         _SHIFT_LOOKUP = _ROOT / "data" / "shots" / "shift_lookup.parquet"
-        if not _SHIFT_LOOKUP.exists():
+        if live_shifts is not None:
+            self._log("  Using live shift data ...")
+            shifts = live_shifts
+        elif not _SHIFT_LOOKUP.exists():
             self._log("  [shift] shift_lookup.parquet not found — skipping shift features")
             for col in ["shooter_toi", "opp_shift_min", "opp_shift_avg", "opp_shift_max"]:
                 df[col] = np.nan
             return df
-
-        self._log("  Loading shift lookup table...")
-        shifts = pd.read_parquet(_SHIFT_LOOKUP)
+        else:
+            self._log("  Loading shift lookup table...")
+            shifts = pd.read_parquet(_SHIFT_LOOKUP)
 
         def _mmss_to_s(v):
             try:

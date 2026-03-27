@@ -36,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import requests
 
 _ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_ROOT))
@@ -46,6 +47,91 @@ from src.data.export_shots import (
     _parse_game_data,
 )
 from src.database import get_db_path
+
+
+# ── 0. Live shift helper ─────────────────────────────────────────────────
+
+REGULAR_SHIFT_TYPECODE = 517
+_SHIFT_API_URL = "https://api.nhle.com/stats/rest/en/shiftcharts"
+
+
+def _fetch_live_shifts(game_id: int | str, positions: dict[int, str]) -> pd.DataFrame:
+    """
+    Fetch shift-chart data for *game_id* from the NHL stats API and return
+    a DataFrame matching the ``shift_lookup.parquet`` schema::
+
+        game_id  period  player_id  team_id  start_s  end_s  is_goalie
+
+    Parameters
+    ----------
+    game_id : int | str
+        NHL game ID.
+    positions : dict[int, str]
+        ``{player_id: position}`` mapping used to flag goalies.
+
+    Returns
+    -------
+    pd.DataFrame
+        Empty DataFrame (correct schema) if the API call fails or returns
+        no usable shifts.
+    """
+    _EMPTY = pd.DataFrame(
+        columns=["game_id", "period", "player_id", "team_id", "start_s", "end_s", "is_goalie"]
+    )
+
+    def _mmss_to_s(v: str) -> int:
+        try:
+            m, s = str(v).strip().split(":")
+            return int(m) * 60 + int(s)
+        except Exception:
+            return -1
+
+    try:
+        resp = requests.get(
+            _SHIFT_API_URL,
+            params={"cayenneExp": f"gameId={game_id}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("data", [])
+    except Exception as exc:
+        print(f"  [shift] Failed to fetch live shifts for {game_id}: {exc}")
+        return _EMPTY
+
+    rows = []
+    for shift in raw:
+        if shift.get("typeCode") != REGULAR_SHIFT_TYPECODE:
+            continue
+        start = _mmss_to_s(shift.get("startTime", ""))
+        end   = _mmss_to_s(shift.get("endTime",   ""))
+        if start < 0 or end < 0 or end < start:
+            continue
+        pid = shift.get("playerId")
+        rows.append({
+            "game_id":   int(game_id),
+            "period":    shift.get("period"),
+            "player_id": pid,
+            "team_id":   shift.get("teamId"),
+            "start_s":   start,
+            "end_s":     end,
+            "is_goalie": (positions.get(int(pid), "") == "G") if pid is not None else False,
+        })
+
+    if not rows:
+        return _EMPTY
+
+    df = pd.DataFrame(rows)
+    df = df.dropna(subset=["game_id", "period", "player_id", "team_id"])
+    df = df.astype({
+        "game_id":   "int64",
+        "period":    "int64",
+        "player_id": "int64",
+        "team_id":   "int64",
+        "start_s":   "int32",
+        "end_s":     "int32",
+        "is_goalie": bool,
+    })
+    return df
 
 
 # ── 1. Fetch ──────────────────────────────────────────────────────────────
@@ -115,6 +201,7 @@ def predict_xg(
     game_id: int | str,
     xg_model,
     shot_types: frozenset | set | None = None,
+    game_json: dict | None = None,
 ) -> pd.DataFrame:
     """
     Fetch a game, run it through XGModel's feature pipeline, and return
@@ -129,6 +216,10 @@ def predict_xg(
         calling ``.run()`` first, or by loading the saved pkl.
     shot_types : frozenset | None
         Which event types to include. Defaults to SOG + blocked + goal.
+    game_json : dict | None
+        Pre-fetched play-by-play JSON dict.  When provided the API fetch
+        step is skipped (avoids a duplicate round-trip when the caller has
+        already fetched the data).
 
     Returns
     -------
@@ -137,10 +228,9 @@ def predict_xg(
 
     Notes
     -----
-    * Shift features (``shooter_toi``, ``opp_shift_*``) are skipped for
-      live single-game fetches unless ``data/shots/shift_lookup.parquet``
-      covers the requested game. The model handles missing shift data
-      gracefully (fills with 0).
+    * Shift features are fetched live from the NHL stats API for the
+      requested game so that ``shooter_toi`` / ``opp_shift_*`` are
+      available even for single-game predictions.
     * The feature set is automatically aligned to whatever the loaded pkl
       was trained on, so this works with both old 33-feature and new
       60+-feature models.
@@ -151,8 +241,11 @@ def predict_xg(
             "or pass a model that has already been trained/loaded."
         )
 
-    print(f"Fetching game {game_id} from NHL API ...")
-    game_json = fetch_game_json(game_id)
+    if game_json is None:
+        print(f"Fetching game {game_id} from NHL API ...")
+        game_json = fetch_game_json(game_id)
+    else:
+        print(f"Using provided play-by-play JSON for game {game_id} ...")
 
     game_state = game_json.get("gameState", "unknown")
     game_date  = game_json.get("gameDate", "")
@@ -160,17 +253,28 @@ def predict_xg(
     away = (game_json.get("awayTeam") or {}).get("name", {}).get("default", "?")
     print(f"  {away} @ {home}  |  {game_date}  |  state={game_state}")
 
+    # Load player positions once — reused for shot parsing and shift lookup
+    positions = _load_player_positions(get_db_path())
+
     print("Parsing shot events ...")
-    shots = parse_game_to_shots(game_json, shot_types=shot_types)
+    shots = parse_game_to_shots(game_json, positions=positions, shot_types=shot_types)
     if shots.empty:
         print("  No qualifying shots found.")
         return shots
     print(f"  {len(shots)} qualifying shots parsed")
 
+    print("Fetching live shift data ...")
+    live_shifts = _fetch_live_shifts(game_id, positions)
+    if live_shifts.empty:
+        print("  No shift data available — shift features will default to 0")
+        live_shifts = None
+    else:
+        print(f"  {len(live_shifts):,} shift rows loaded")
+
     print("Engineering features ...")
     shots = xg_model._clean_coords(shots)
     shots = xg_model._add_prior_event_features(shots)
-    shots = xg_model._add_shift_features(shots)
+    shots = xg_model._add_shift_features(shots, live_shifts=live_shifts)
     X, _, _ = xg_model._build_feature_matrix(shots)
 
     # Align to the feature set the pkl was trained on

@@ -1,8 +1,7 @@
-"""Source package initialization."""
+"""NHL xG source package.
 
-from . import data
-from . import database
-from . import features
-from . import models
+Keep package initialization lightweight and avoid eager submodule imports.
+This prevents circular imports during app startup.
+"""
 
-__all__ = ['data', 'database', 'features', 'models']
+__all__ = ["data", "database", "models"]
