@@ -790,6 +790,17 @@ class XGModel:
             df.get("score_diff_cat", pd.Series("tie", index=df.index)),
             prefix="scoreDiff",
         )
+        expected_score_cols = [
+            "scoreDiff_down2+",
+            "scoreDiff_down1",
+            "scoreDiff_tie",
+            "scoreDiff_up1",
+            "scoreDiff_up2+",
+        ]
+        for col in expected_score_cols:
+            if col not in score_dummies.columns:
+                score_dummies[col] = 0
+        score_dummies = score_dummies[expected_score_cols]
 
         # ─ shot-type one-hot (4 types, same as notebook) ────────────────
         st_col = self._find_col(df, ["shotType", "shot_type", "secondary_type"])
@@ -801,6 +812,11 @@ class XGModel:
         else:
             raw = pd.Series(np.nan, index=df.index)
         shot_dummies = pd.get_dummies(raw, prefix="shotType")
+        expected_shot_cols = [f"shotType_{t}" for t in valid_types]
+        for col in expected_shot_cols:
+            if col not in shot_dummies.columns:
+                shot_dummies[col] = 0
+        shot_dummies = shot_dummies[expected_shot_cols]
 
         # NEW: last-event-type dummies (already in df from _add_prior_event_features)
         last_event_cols = [c for c in df.columns if c.startswith("last_event_")]

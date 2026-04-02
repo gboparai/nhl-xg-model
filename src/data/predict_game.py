@@ -55,6 +55,39 @@ REGULAR_SHIFT_TYPECODE = 517
 _SHIFT_API_URL = "https://api.nhle.com/stats/rest/en/shiftcharts"
 
 
+def _get_trained_feature_names(model) -> list[str] | None:
+    """Return trained feature names from common saved model layouts."""
+    try:
+        names = getattr(model, "feature_names_in_", None)
+        if names is not None:
+            return list(names)
+    except Exception:
+        pass
+
+    try:
+        named_steps = getattr(model, "named_steps", None)
+        if named_steps:
+            for step_name in ("xgb", "classifier", "model"):
+                step = named_steps.get(step_name)
+                if step is None:
+                    continue
+                names = getattr(step, "feature_names_in_", None)
+                if names is not None:
+                    return list(names)
+    except Exception:
+        pass
+
+    try:
+        xgb = model["xgb"]
+        names = getattr(xgb, "feature_names_in_", None)
+        if names is not None:
+            return list(names)
+    except Exception:
+        pass
+
+    return None
+
+
 def _fetch_live_shifts(game_id: int | str, positions: dict[int, str]) -> pd.DataFrame:
     """
     Fetch shift-chart data for *game_id* from the NHL stats API and return
@@ -277,12 +310,10 @@ def predict_xg(
     shots = xg_model._add_shift_features(shots, live_shifts=live_shifts)
     X, _, _ = xg_model._build_feature_matrix(shots)
 
-    # Align to the feature set the pkl was trained on
-    try:
-        pkl_features = list(xg_model._model["xgb"].feature_names_in_)
+    # Align to the feature set the pkl was trained on.
+    pkl_features = _get_trained_feature_names(xg_model._model)
+    if pkl_features:
         X = X.reindex(columns=pkl_features, fill_value=0)
-    except Exception:
-        pass
 
     shots = shots.loc[X.index].copy()
     shots["xg"] = xg_model._model.predict_proba(X)[:, 1]
