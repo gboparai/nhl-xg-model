@@ -381,8 +381,8 @@ class XGModel:
 
         # Recompute exactly as the notebook does using prev_event_* columns
         # that export_shots.py now provides from the raw JSON lag() pattern.
-        df["current_time_s"] = df["time_in_period"].apply(_to_s)
-        df["prev_time_s"]    = df["prev_event_time"].apply(_to_s)
+        df["current_time_s"] = pd.to_numeric(df["time_in_period"].apply(_to_s), errors="coerce")
+        df["prev_time_s"] = pd.to_numeric(df["prev_event_time"].apply(_to_s), errors="coerce")
 
         same_period = df["period_number"] == df["prev_event_period"]
 
